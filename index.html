@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Car Rush</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-wrap">
+    <h1>Car Rush</h1>
+    <div id="canvas-container">
+      <canvas id="gameCanvas" width="480" height="720"></canvas>
+      <div id="hud">
+        <div id="score">Score: 0</div>
+      </div>
+      <button id="settingsBtn" title="Settings">⚙️</button>
+      <div id="overlay">
+        <div id="overlay-title" class="overlay-title">Car Rush</div>
+        <div id="overlay-message" class="overlay-message">Use ← → or A / D to switch lanes.<br>Use ↑ ↓ or W / S to move up and down.<br>Press Space to jump — clears small cars, but big trucks will still wreck you!<br>Press M to mute/unmute, Enter to open Settings.</div>
+        <button id="startBtn">Start Game</button>
+      </div>
+
+      <div id="welcomeOverlay" class="hidden">
+        <div id="usernameView">
+          <div class="overlay-title">Welcome to Car Rush!</div>
+          <div class="overlay-message">Enter a name to save your scores on the leaderboard.</div>
+          <input id="usernameInput" type="text" maxlength="16" placeholder="Your name" autocomplete="off" />
+          <button id="usernameContinueBtn">Continue</button>
+        </div>
+
+        <div id="welcomeMenuView" class="hidden settings-card">
+          <div class="settings-title">Ready, <span id="welcomeUserName"></span>?</div>
+          <button id="welcomeStartBtn" class="settings-row">🏁 Start Game</button>
+          <button id="welcomeSettingsBtn" class="settings-row">⚙️ Settings</button>
+          <button id="welcomeLeaderboardBtn" class="settings-row">🏆 Leaderboard</button>
+          <button id="welcomeExitBtn" class="settings-row">🚪 Exit Game</button>
+        </div>
+
+        <div id="exitView" class="hidden">
+          <div class="overlay-title">Thanks for playing!</div>
+          <div class="overlay-message">Close this tab, or reload the page to play again — you'll be asked for a name again first.</div>
+        </div>
+      </div>
+
+      <div id="settingsModal" class="hidden">
+        <div class="settings-card">
+          <div id="settingsMainView">
+            <div class="settings-title">Settings</div>
+            <button id="soundToggleBtn" class="settings-row">🔊 Sound: ON</button>
+            <button id="restartGameBtn" class="settings-row">🔄 Restart Game</button>
+            <button id="leaderboardBtn" class="settings-row">🏆 Leaderboard</button>
+            <button id="mainMenuBtn" class="settings-row">🏠 Return to Main Menu</button>
+            <button id="closeSettingsBtn" class="settings-close">Close</button>
+          </div>
+
+          <div id="leaderboardView" class="hidden">
+            <div class="settings-title">Top 10 Scores</div>
+            <ol id="leaderboardList" class="leaderboard-list"></ol>
+            <div id="leaderboardStatus" class="leaderboard-status"></div>
+            <button id="leaderboardBackBtn" class="settings-close">Back</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="hint">Controls: Arrow Keys / WASD to drive, Space to jump, M to mute, Enter for Settings/Restart</p>
+  </div>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="audio.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
