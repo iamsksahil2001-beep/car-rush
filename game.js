@@ -28,11 +28,16 @@ const welcomeSettingsBtn = document.getElementById('welcomeSettingsBtn');
 const welcomeLeaderboardBtn = document.getElementById('welcomeLeaderboardBtn');
 const welcomeExitBtn = document.getElementById('welcomeExitBtn');
 const exitView = document.getElementById('exitView');
+const howToPlayView = document.getElementById('howToPlayView');
+const howToPlayStartBtn = document.getElementById('howToPlayStartBtn');
 
 const USERNAME_KEY = 'carRushUsername';
+const TUTORIAL_KEY = 'carRushTutorialSeen';
 let currentUsername = '';
+let hasSeenTutorial = false;
 try {
   currentUsername = localStorage.getItem(USERNAME_KEY) || '';
+  hasSeenTutorial = localStorage.getItem(TUTORIAL_KEY) === 'true';
 } catch (e) {
   console.warn('Car Rush: could not read saved username.', e);
 }
@@ -59,8 +64,46 @@ try {
 }
 
 const LANE_COUNT = 4;
-const LANE_WIDTH = canvas.width / LANE_COUNT;
-const laneCenterX = (lane) => lane * LANE_WIDTH + LANE_WIDTH / 2;
+const ROAD_MARGIN = 60;
+const ROAD_WIDTH = canvas.width - ROAD_MARGIN * 2;
+const LANE_WIDTH = ROAD_WIDTH / LANE_COUNT;
+const laneCenterX = (lane) => ROAD_MARGIN + lane * LANE_WIDTH + LANE_WIDTH / 2;
+
+// Fixed asphalt grain speckles, generated once so the texture doesn't flicker
+// between frames — scrolled each frame via roadScrollTotal.
+const ASPHALT_SPECKS = Array.from({ length: 90 }, () => ({
+  xFrac: Math.random(),
+  baseY: Math.random() * canvas.height,
+  r: 0.6 + Math.random() * 1.5,
+  shade: Math.random() < 0.5 ? 'rgba(0,0,0,0.14)' : 'rgba(255,255,255,0.07)',
+}));
+
+// Rooftop buildings lining both shoulders, seen from above to match the
+// top-down view. A fixed-height tile of buildings repeats and scrolls past.
+const BUILDING_TILE_HEIGHT = 260;
+const BUILDING_STRIP_WIDTH = 38;
+const BUILDING_ROAD_GAP = 16;
+const BUILDING_COLORS = ['#8a8f98', '#9c8468', '#7d6a58', '#6f7a72', '#8f7367', '#7a828c', '#5f6b74'];
+
+function generateBuildingTile() {
+  const buildings = [];
+  let y = 0;
+  while (BUILDING_TILE_HEIGHT - y >= 40) {
+    const height = Math.min(70 + Math.random() * 90, BUILDING_TILE_HEIGHT - y);
+    buildings.push({
+      yStart: y,
+      height,
+      color: BUILDING_COLORS[Math.floor(Math.random() * BUILDING_COLORS.length)],
+      vents: 2 + Math.floor(Math.random() * 3),
+      hasTank: Math.random() < 0.3,
+    });
+    y += height + 10 + Math.random() * 10;
+  }
+  return buildings;
+}
+
+const LEFT_BUILDINGS = generateBuildingTile();
+const RIGHT_BUILDINGS = generateBuildingTile();
 
 const PLAYER_WIDTH = 62;
 const PLAYER_HEIGHT = 104;
@@ -73,7 +116,7 @@ const JUMP_FRAMES = 50;
 const JUMP_HEIGHT = 115;
 const JUMP_SCALE = 0.38;
 const MIN_HOVER_ARC = 0.55;
-const JUMP_NEAR_RANGE = 45;
+const JUMP_NEAR_RANGE = 85;
 
 const TRAFFIC_TYPES = [
   { width: 58, height: 96, color: '#ff4d4d', minSpeed: 3.2, maxSpeed: 4.6, size: 'small', shape: 'sedan' },
@@ -83,6 +126,8 @@ const TRAFFIC_TYPES = [
 ];
 
 let player, traffic, score, laneLines, spawnTimer, spawnInterval, gameState, roadOffset;
+let roadScrollTotal = 0;
+let buildingScrollTotal = 0;
 let isPaused = false;
 let floatingTexts = [];
 
@@ -104,6 +149,8 @@ function resetGame() {
   spawnTimer = 0;
   spawnInterval = 70;
   roadOffset = 0;
+  roadScrollTotal = 0;
+  buildingScrollTotal = 0;
   floatingTexts = [];
   laneLines = buildLaneLines();
   gameState = 'playing';
@@ -182,6 +229,8 @@ function update() {
   }
 
   roadOffset = (roadOffset + 6) % 40;
+  roadScrollTotal = (roadScrollTotal + 6) % canvas.height;
+  buildingScrollTotal = (buildingScrollTotal + 3) % BUILDING_TILE_HEIGHT;
 
   const speed01 = Math.min(1, 0.15 + score / 30);
   EngineSound.setSpeed(speed01);
@@ -352,19 +401,114 @@ function renderLeaderboardEntries(entries) {
   }
 }
 
+function drawBuildingRoof(x, y, width, height, b) {
+  // Cast shadow (down-right) to suggest height from directly overhead.
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.fillRect(x + 5, y + 5, width, height);
+
+  ctx.fillStyle = b.color;
+  ctx.fillRect(x, y, width, height);
+
+  const sheen = ctx.createLinearGradient(x, y, x, y + height);
+  sheen.addColorStop(0, 'rgba(255,255,255,0.1)');
+  sheen.addColorStop(1, 'rgba(0,0,0,0.12)');
+  ctx.fillStyle = sheen;
+  ctx.fillRect(x, y, width, height);
+
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 1, y + 1, width - 2, height - 2);
+
+  const vGap = height / (b.vents + 1);
+  for (let i = 1; i <= b.vents; i++) {
+    const vy = y + vGap * i - 4;
+    ctx.fillStyle = 'rgba(0,0,0,0.32)';
+    ctx.fillRect(x + width * 0.18, vy, width * 0.24, 8);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(x + width * 0.18, vy, width * 0.24, 2);
+  }
+
+  if (b.hasTank) {
+    const r = Math.min(width, height) * 0.14;
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.arc(x + width * 0.72, y + height * 0.25, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.beginPath();
+    ctx.arc(x + width * 0.68, y + height * 0.22, r * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawBuildingSide(stripX, buildings) {
+  const offset = buildingScrollTotal % BUILDING_TILE_HEIGHT;
+  for (let baseY = offset - BUILDING_TILE_HEIGHT; baseY < canvas.height; baseY += BUILDING_TILE_HEIGHT) {
+    for (const b of buildings) {
+      const by = baseY + b.yStart;
+      if (by + b.height < 0 || by > canvas.height) continue;
+      drawBuildingRoof(stripX, by, BUILDING_STRIP_WIDTH, b.height, b);
+    }
+  }
+}
+
 function drawRoad() {
-  ctx.fillStyle = '#3a3f47';
+  const roadX = ROAD_MARGIN;
+
+  // Grass shoulders, with scrolling mowed-stripe bands for a sense of motion.
+  ctx.fillStyle = '#2c5c37';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  ctx.fillStyle = '#2f333a';
-  ctx.fillRect(0, 0, 10, canvas.height);
-  ctx.fillRect(canvas.width - 10, 0, 10, canvas.height);
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  const stripeH = 46;
+  for (let y = -stripeH * 2; y < canvas.height + stripeH * 2; y += stripeH * 2) {
+    const yy = (((y + roadScrollTotal) % (canvas.height + stripeH * 2)) + canvas.height + stripeH * 2) % (canvas.height + stripeH * 2) - stripeH;
+    ctx.fillRect(0, yy, roadX, stripeH);
+    ctx.fillRect(canvas.width - roadX, yy, roadX, stripeH);
+  }
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  // Buildings lining both shoulders, seen from above.
+  drawBuildingSide(roadX - BUILDING_ROAD_GAP - BUILDING_STRIP_WIDTH, LEFT_BUILDINGS);
+  drawBuildingSide(canvas.width - roadX + BUILDING_ROAD_GAP, RIGHT_BUILDINGS);
+
+  // Asphalt surface with a subtle center-lit gradient.
+  const asphaltGradient = ctx.createLinearGradient(roadX, 0, roadX + ROAD_WIDTH, 0);
+  asphaltGradient.addColorStop(0, '#33383f');
+  asphaltGradient.addColorStop(0.5, '#3f454d');
+  asphaltGradient.addColorStop(1, '#33383f');
+  ctx.fillStyle = asphaltGradient;
+  ctx.fillRect(roadX, 0, ROAD_WIDTH, canvas.height);
+
+  // Asphalt grain — fixed speckles that scroll with the road.
+  for (const speck of ASPHALT_SPECKS) {
+    const sy = (speck.baseY + roadScrollTotal) % canvas.height;
+    ctx.fillStyle = speck.shade;
+    ctx.beginPath();
+    ctx.arc(roadX + speck.xFrac * ROAD_WIDTH, sy, speck.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Concrete curb between grass and asphalt.
+  ctx.fillStyle = '#c7c7c0';
+  ctx.fillRect(roadX - 4, 0, 4, canvas.height);
+  ctx.fillRect(roadX + ROAD_WIDTH, 0, 4, canvas.height);
+
+  // Solid white shoulder lines along both edges of the roadway.
+  ctx.strokeStyle = 'rgba(250,250,245,0.9)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(roadX + 3, 0);
+  ctx.lineTo(roadX + 3, canvas.height);
+  ctx.moveTo(roadX + ROAD_WIDTH - 3, 0);
+  ctx.lineTo(roadX + ROAD_WIDTH - 3, canvas.height);
+  ctx.stroke();
+
+  // Dashed lane divider lines, scrolling to sell forward motion.
+  ctx.strokeStyle = 'rgba(244,244,238,0.8)';
   ctx.lineWidth = 4;
-  ctx.setLineDash([22, 18]);
+  ctx.setLineDash([30, 22]);
   for (let lane = 1; lane < LANE_COUNT; lane++) {
-    const x = lane * LANE_WIDTH;
+    const x = roadX + lane * LANE_WIDTH;
     ctx.beginPath();
     ctx.moveTo(x, roadOffset - 40);
     ctx.lineTo(x, canvas.height);
@@ -384,75 +528,158 @@ function shadeColor(hex, percent) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+function drawGroundShadow(x, y, width, height, strength) {
+  ctx.save();
+  ctx.globalAlpha = strength;
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(x + width / 2, y + height * 0.94, width * 0.46, height * 0.09, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawWheels(x, y, width, height, axleFractions) {
-  ctx.fillStyle = '#1a1a1a';
-  const wheelW = width * 0.15;
-  const wheelH = height * 0.08;
+  const wheelW = width * 0.16;
+  const wheelH = height * 0.085;
   for (const f of axleFractions) {
     const wy = y + height * f - wheelH / 2;
-    ctx.fillRect(x - wheelW * 0.35, wy, wheelW, wheelH);
-    ctx.fillRect(x + width - wheelW * 0.65, wy, wheelW, wheelH);
+    for (const wx of [x - wheelW * 0.32, x + width - wheelW * 0.68]) {
+      ctx.fillStyle = '#111';
+      roundRect(wx, wy, wheelW, wheelH, wheelH * 0.4);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(wx + wheelW * 0.2, wy + wheelH * 0.42, wheelW * 0.6, wheelH * 0.16);
+      ctx.fillStyle = '#555';
+      ctx.beginPath();
+      ctx.arc(wx + wheelW / 2, wy + wheelH / 2, wheelH * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
 function drawLights(x, y, width, height) {
-  const lightW = width * 0.12;
-  const lightH = height * 0.02;
-  ctx.fillStyle = '#fff8c0';
-  ctx.fillRect(x + width * 0.08, y + 2, lightW, lightH);
-  ctx.fillRect(x + width - width * 0.08 - lightW, y + 2, lightW, lightH);
+  const lightW = width * 0.11;
+  const lightH = height * 0.022;
+
+  ctx.save();
+  ctx.shadowColor = 'rgba(255, 244, 190, 0.9)';
+  ctx.shadowBlur = 4;
+  ctx.fillStyle = '#fff6c8';
+  roundRect(x + width * 0.09, y + 2, lightW, lightH, lightH / 2);
+  ctx.fill();
+  roundRect(x + width - width * 0.09 - lightW, y + 2, lightW, lightH, lightH / 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.shadowColor = 'rgba(255, 60, 60, 0.9)';
+  ctx.shadowBlur = 4;
   ctx.fillStyle = '#ff3b3b';
-  ctx.fillRect(x + width * 0.08, y + height - lightH - 2, lightW, lightH);
-  ctx.fillRect(x + width - width * 0.08 - lightW, y + height - lightH - 2, lightW, lightH);
+  roundRect(x + width * 0.09, y + height - lightH - 2, lightW, lightH, lightH / 2);
+  ctx.fill();
+  roundRect(x + width - width * 0.09 - lightW, y + height - lightH - 2, lightW, lightH, lightH / 2);
+  ctx.fill();
+  ctx.restore();
 }
 
-// Small car: tapered hood, windshield/rear window, roof panel, mirrors.
-function drawSedan(x, y, width, height, color, windowColor, withStripe) {
-  const taper = width * 0.14;
-
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(x + taper, y);
-  ctx.lineTo(x + width - taper, y);
-  ctx.lineTo(x + width, y + height * 0.22);
-  ctx.lineTo(x + width, y + height - 10);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - 10, y + height);
-  ctx.lineTo(x + 10, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - 10);
-  ctx.lineTo(x, y + height * 0.22);
-  ctx.closePath();
+function drawGlassPanel(x, y, width, height, radius) {
+  const gradient = ctx.createLinearGradient(x, y, x + width, y + height);
+  gradient.addColorStop(0, 'rgba(150, 195, 220, 0.75)');
+  gradient.addColorStop(0.55, 'rgba(25, 40, 55, 0.55)');
+  gradient.addColorStop(1, 'rgba(10, 18, 26, 0.6)');
+  ctx.fillStyle = gradient;
+  roundRect(x, y, width, height, radius);
   ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = Math.max(1, width * 0.05);
+  ctx.beginPath();
+  ctx.moveTo(x + width * 0.14, y + height * 0.18);
+  ctx.lineTo(x + width * 0.42, y + height * 0.82);
+  ctx.stroke();
+}
+
+// Small car: curved fenders, glass-tinted windows, roof sheen, chrome-ish wheels.
+// skipShadow lets the player car supply its own jump-aware shadow instead.
+function drawSedan(x, y, width, height, color, withStripe, skipShadow) {
+  const cx = x + width / 2;
+
+  if (!skipShadow) {
+    drawGroundShadow(x, y, width, height, 0.28);
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(cx - width * 0.2, y);
+  ctx.quadraticCurveTo(cx, y - height * 0.012, cx + width * 0.2, y);
+  ctx.bezierCurveTo(x + width * 0.86, y + height * 0.05, x + width, y + height * 0.24, x + width, y + height * 0.4);
+  ctx.bezierCurveTo(x + width, y + height * 0.58, x + width * 0.94, y + height * 0.84, x + width * 0.82, y + height);
+  ctx.lineTo(x + width * 0.18, y + height);
+  ctx.bezierCurveTo(x + width * 0.06, y + height * 0.84, x, y + height * 0.58, x, y + height * 0.4);
+  ctx.bezierCurveTo(x, y + height * 0.24, x + width * 0.14, y + height * 0.05, cx - width * 0.2, y);
+  ctx.closePath();
+
+  const bodyGradient = ctx.createLinearGradient(x, y, x + width, y);
+  bodyGradient.addColorStop(0, shadeColor(color, -0.22));
+  bodyGradient.addColorStop(0.45, shadeColor(color, 0.16));
+  bodyGradient.addColorStop(0.55, shadeColor(color, 0.16));
+  bodyGradient.addColorStop(1, shadeColor(color, -0.24));
+  ctx.fillStyle = bodyGradient;
+  ctx.fill();
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = shadeColor(color, -0.4);
+  ctx.stroke();
 
   if (withStripe) {
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillRect(x + width / 2 - width * 0.045, y + height * 0.08, width * 0.09, height * 0.84);
+    ctx.fillRect(cx - width * 0.045, y + height * 0.06, width * 0.09, height * 0.88);
   }
 
-  ctx.fillStyle = shadeColor(color, -0.12);
-  roundRect(x + width * 0.14, y + height * 0.36, width * 0.72, height * 0.26, 6);
+  // door seams
+  ctx.strokeStyle = shadeColor(color, -0.3);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x + width * 0.05, y + height * 0.63);
+  ctx.lineTo(x + width * 0.95, y + height * 0.63);
+  ctx.stroke();
+
+  const roofGradient = ctx.createLinearGradient(x, y + height * 0.32, x, y + height * 0.66);
+  roofGradient.addColorStop(0, shadeColor(color, -0.06));
+  roofGradient.addColorStop(0.5, shadeColor(color, 0.14));
+  roofGradient.addColorStop(1, shadeColor(color, -0.1));
+  ctx.fillStyle = roofGradient;
+  roundRect(x + width * 0.15, y + height * 0.34, width * 0.7, height * 0.28, 8);
   ctx.fill();
 
-  ctx.fillStyle = windowColor || 'rgba(20,20,20,0.35)';
-  roundRect(x + width * 0.16, y + height * 0.1, width * 0.68, height * 0.19, 5);
-  ctx.fill();
-  roundRect(x + width * 0.18, y + height * 0.68, width * 0.64, height * 0.17, 5);
-  ctx.fill();
+  drawGlassPanel(x + width * 0.17, y + height * 0.09, width * 0.66, height * 0.19, 6);
+  drawGlassPanel(x + width * 0.19, y + height * 0.68, width * 0.62, height * 0.17, 6);
 
-  ctx.fillStyle = shadeColor(color, -0.25);
-  ctx.fillRect(x - width * 0.06, y + height * 0.22, width * 0.08, height * 0.05);
-  ctx.fillRect(x + width - width * 0.02, y + height * 0.22, width * 0.08, height * 0.05);
+  ctx.fillStyle = shadeColor(color, -0.3);
+  roundRect(x - width * 0.05, y + height * 0.23, width * 0.09, height * 0.045, 2);
+  ctx.fill();
+  roundRect(x + width - width * 0.04, y + height * 0.23, width * 0.09, height * 0.045, 2);
+  ctx.fill();
 
   drawLights(x, y, width, height);
-  drawWheels(x, y, width, height, [0.16, 0.82]);
+  drawWheels(x, y, width, height, [0.17, 0.81]);
 }
 
 // Delivery truck: dark cab up front, boxy cargo bed behind, three axles.
 function drawTruck(x, y, width, height, color) {
   const cabHeight = height * 0.22;
 
-  ctx.fillStyle = color;
+  drawGroundShadow(x, y, width, height, 0.3);
+
+  const bedGradient = ctx.createLinearGradient(x, y, x + width, y);
+  bedGradient.addColorStop(0, shadeColor(color, -0.2));
+  bedGradient.addColorStop(0.5, shadeColor(color, 0.1));
+  bedGradient.addColorStop(1, shadeColor(color, -0.2));
+  ctx.fillStyle = bedGradient;
   roundRect(x, y + cabHeight - 4, width, height - cabHeight + 4, 8);
   ctx.fill();
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = shadeColor(color, -0.4);
+  roundRect(x, y + cabHeight - 4, width, height - cabHeight + 4, 8);
+  ctx.stroke();
 
   ctx.strokeStyle = shadeColor(color, -0.18);
   ctx.lineWidth = 2;
@@ -465,13 +692,15 @@ function drawTruck(x, y, width, height, color) {
   ctx.lineTo(x + width / 2, y + height - 6);
   ctx.stroke();
 
-  ctx.fillStyle = shadeColor(color, -0.3);
+  const cabGradient = ctx.createLinearGradient(x, y, x + width, y);
+  cabGradient.addColorStop(0, shadeColor(color, -0.42));
+  cabGradient.addColorStop(0.5, shadeColor(color, -0.2));
+  cabGradient.addColorStop(1, shadeColor(color, -0.42));
+  ctx.fillStyle = cabGradient;
   roundRect(x + width * 0.06, y, width * 0.88, cabHeight + 6, 8);
   ctx.fill();
 
-  ctx.fillStyle = 'rgba(20,20,20,0.4)';
-  roundRect(x + width * 0.16, y + height * 0.03, width * 0.68, cabHeight * 0.55, 4);
-  ctx.fill();
+  drawGlassPanel(x + width * 0.16, y + height * 0.03, width * 0.68, cabHeight * 0.55, 4);
 
   drawLights(x, y, width, height);
   drawWheels(x, y, width, height, [0.22, 0.58, 0.9]);
@@ -479,13 +708,21 @@ function drawTruck(x, y, width, height, color) {
 
 // Bus: long boxy body, wide front windshield, a row of passenger windows.
 function drawBus(x, y, width, height, color) {
-  ctx.fillStyle = color;
+  drawGroundShadow(x, y, width, height, 0.3);
+
+  const bodyGradient = ctx.createLinearGradient(x, y, x + width, y);
+  bodyGradient.addColorStop(0, shadeColor(color, -0.18));
+  bodyGradient.addColorStop(0.5, shadeColor(color, 0.12));
+  bodyGradient.addColorStop(1, shadeColor(color, -0.18));
+  ctx.fillStyle = bodyGradient;
   roundRect(x, y, width, height, 12);
   ctx.fill();
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = shadeColor(color, -0.35);
+  roundRect(x, y, width, height, 12);
+  ctx.stroke();
 
-  ctx.fillStyle = 'rgba(20,20,20,0.4)';
-  roundRect(x + width * 0.1, y + height * 0.05, width * 0.8, height * 0.11, 5);
-  ctx.fill();
+  drawGlassPanel(x + width * 0.1, y + height * 0.05, width * 0.8, height * 0.11, 5);
 
   ctx.fillStyle = '#fdfdc0';
   roundRect(x + width * 0.32, y + height * 0.018, width * 0.36, height * 0.02, 2);
@@ -494,7 +731,7 @@ function drawBus(x, y, width, height, color) {
   ctx.fillStyle = shadeColor(color, 0.22);
   ctx.fillRect(x, y + height * 0.45, width, height * 0.04);
 
-  ctx.fillStyle = 'rgba(20,20,20,0.35)';
+  ctx.fillStyle = 'rgba(15,25,35,0.55)';
   const winCount = 4;
   const winW = width * 0.14;
   const winH = height * 0.08;
@@ -505,8 +742,7 @@ function drawBus(x, y, width, height, color) {
     ctx.fill();
   }
 
-  roundRect(x + width * 0.14, y + height * 0.84, width * 0.72, height * 0.09, 4);
-  ctx.fill();
+  drawGlassPanel(x + width * 0.14, y + height * 0.84, width * 0.72, height * 0.09, 4);
 
   drawLights(x, y, width, height);
   drawWheels(x, y, width, height, [0.2, 0.5, 0.85]);
@@ -528,7 +764,7 @@ function drawTrafficVehicle(v) {
   } else if (v.shape === 'bus') {
     drawBus(v.x, v.y, v.width, v.height, v.color);
   } else {
-    drawSedan(v.x, v.y, v.width, v.height, v.color, 'rgba(20,20,20,0.35)', false);
+    drawSedan(v.x, v.y, v.width, v.height, v.color, false);
   }
 
   ctx.restore();
@@ -614,7 +850,7 @@ function drawPlayer() {
     ctx.restore();
   }
 
-  drawSedan(drawX, drawY, drawW, drawH, '#3ec1ff', 'rgba(255,255,255,0.5)', true);
+  drawSedan(drawX, drawY, drawW, drawH, '#3ec1ff', true, true);
 }
 
 function loop() {
@@ -667,7 +903,9 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === ' ' || e.key === 'Spacebar') {
     triggerJump();
   } else if (e.key === 'Enter') {
-    if (gameState === 'gameover' && settingsModal.classList.contains('hidden')) {
+    if (!howToPlayView.classList.contains('hidden')) {
+      beginFirstGame();
+    } else if (gameState === 'gameover' && settingsModal.classList.contains('hidden')) {
       startBtn.click();
     } else if (gameState === 'playing' && settingsModal.classList.contains('hidden')) {
       openSettings();
@@ -729,6 +967,7 @@ function returnToMainMenu() {
 
   welcomeUserName.textContent = currentUsername || 'Player';
   usernameView.classList.add('hidden');
+  howToPlayView.classList.add('hidden');
   welcomeMenuView.classList.remove('hidden');
   welcomeOverlay.classList.remove('hidden');
 }
@@ -757,11 +996,31 @@ usernameInput.addEventListener('keydown', (e) => {
   }
 });
 
-welcomeStartBtn.addEventListener('click', () => {
+function beginFirstGame() {
+  hasSeenTutorial = true;
+  try {
+    localStorage.setItem(TUTORIAL_KEY, 'true');
+  } catch (e) {
+    console.warn('Car Rush: could not save tutorial-seen flag.', e);
+  }
+  howToPlayView.classList.add('hidden');
   welcomeOverlay.classList.add('hidden');
   overlay.classList.add('hidden');
   resetGame();
+}
+
+welcomeStartBtn.addEventListener('click', () => {
+  if (hasSeenTutorial) {
+    welcomeOverlay.classList.add('hidden');
+    overlay.classList.add('hidden');
+    resetGame();
+    return;
+  }
+  welcomeMenuView.classList.add('hidden');
+  howToPlayView.classList.remove('hidden');
 });
+
+howToPlayStartBtn.addEventListener('click', beginFirstGame);
 
 welcomeSettingsBtn.addEventListener('click', () => {
   openSettings();
@@ -779,11 +1038,13 @@ welcomeExitBtn.addEventListener('click', () => {
   isPaused = false;
   EngineSound.stop();
 
-  // Clear the saved name so the next time this link is opened — by anyone,
-  // on this browser — it starts over at the username screen.
+  // Clear the saved name and tutorial flag so the next time this link is
+  // opened — by anyone, on this browser — it starts over from scratch.
   currentUsername = '';
+  hasSeenTutorial = false;
   try {
     localStorage.removeItem(USERNAME_KEY);
+    localStorage.removeItem(TUTORIAL_KEY);
   } catch (e) {
     console.warn('Car Rush: could not clear saved username.', e);
   }
@@ -792,6 +1053,7 @@ welcomeExitBtn.addEventListener('click', () => {
   settingsModal.classList.add('hidden');
   usernameView.classList.add('hidden');
   welcomeMenuView.classList.add('hidden');
+  howToPlayView.classList.add('hidden');
   exitView.classList.remove('hidden');
   welcomeOverlay.classList.remove('hidden');
 

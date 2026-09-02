@@ -10,7 +10,7 @@
   <div id="game-wrap">
     <h1>Car Rush</h1>
     <div id="canvas-container">
-      <canvas id="gameCanvas" width="480" height="720"></canvas>
+      <canvas id="gameCanvas" width="600" height="720"></canvas>
       <div id="hud">
         <div id="score">Score: 0</div>
       </div>
@@ -40,6 +40,33 @@
         <div id="exitView" class="hidden">
           <div class="overlay-title">Thanks for playing!</div>
           <div class="overlay-message">Close this tab, or reload the page to play again — you'll be asked for a name again first.</div>
+        </div>
+
+        <div id="howToPlayView" class="hidden settings-card">
+          <div class="settings-title">How to Play</div>
+
+          <div class="howto-diagram">
+            <div class="howto-lane"></div>
+            <div class="howto-lane howto-lane-fill">🚙</div>
+            <div class="howto-lane howto-lane-fill howto-lane-player">🚗</div>
+            <div class="howto-lane"></div>
+          </div>
+          <div class="howto-caption">⬅️ ➡️ Move sideways to dodge traffic</div>
+
+          <div class="howto-diagram howto-jump-diagram">
+            <span>🚙</span>
+            <span class="howto-jump-arrow">⤴️</span>
+            <span>🚗</span>
+          </div>
+          <div class="howto-caption">Space to jump small cars — big trucks still wreck you!</div>
+
+          <div class="overlay-message">
+            ← → / A D — switch lanes<br>
+            ↑ ↓ / W S — move up and down<br>
+            Space — jump · M — mute
+          </div>
+
+          <button id="howToPlayStartBtn" class="settings-close">Press Enter or Click to Start</button>
         </div>
       </div>
 
