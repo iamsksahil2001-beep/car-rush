@@ -1,5 +1,6 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+const canvasContainer = document.getElementById('canvas-container');
 const scoreEl = document.getElementById('score');
 const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlay-title');
@@ -13,6 +14,8 @@ const soundToggleBtn = document.getElementById('soundToggleBtn');
 const restartGameBtn = document.getElementById('restartGameBtn');
 const leaderboardBtn = document.getElementById('leaderboardBtn');
 const mainMenuBtn = document.getElementById('mainMenuBtn');
+const fullscreenBtn = document.getElementById('fullscreenBtn');
+const welcomeFullscreenBtn = document.getElementById('welcomeFullscreenBtn');
 const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 const leaderboardBackBtn = document.getElementById('leaderboardBackBtn');
 const leaderboardList = document.getElementById('leaderboardList');
@@ -112,11 +115,24 @@ const PLAYER_MIN_Y = 60;
 const PLAYER_MAX_Y = canvas.height - PLAYER_HEIGHT - 10;
 const VERTICAL_SPEED = 5;
 
-const JUMP_FRAMES = 50;
-const JUMP_HEIGHT = 115;
-const JUMP_SCALE = 0.38;
+const JUMP_FRAMES = 60; // ~1 second at 60fps
+const JUMP_HEIGHT = 185;
+const JUMP_SCALE = 0.52;
+const DOOR_MAX_ANGLE = 0.85;
+const DOUBLE_JUMP_FRAMES = 90; // ~1.5 seconds at 60fps
+const DOUBLE_JUMP_PEAK = 1.55;
+const DOUBLE_JUMP_RISE_FRACTION = 0.35;
 const MIN_HOVER_ARC = 0.55;
 const JUMP_NEAR_RANGE = 85;
+
+const ZEBRA_INTERVAL_MS = 11000; // a new crossing every real 11 seconds, wall-clock accurate
+const ZEBRA_HEIGHT = 74;
+const ZEBRA_SPEED = 3.2;
+const ZEBRA_STOP_BUFFER = 26;
+const FOLLOW_GAP = 46;
+const PEDESTRIAN_COLORS = ['#e0574c', '#4c9fe0', '#e0c04c', '#7ac25a', '#b06be0', '#e08a3c'];
+const SKIN_TONES = ['#e8b98c', '#c98f5f', '#8d5a3b', '#f2cba0', '#a9744f'];
+const HAIR_COLORS = ['#2a1c14', '#111111', '#5a3a24', '#8a7a6a', '#3a2a1a'];
 
 const TRAFFIC_TYPES = [
   { width: 58, height: 96, color: '#ff4d4d', minSpeed: 3.2, maxSpeed: 4.6, size: 'small', shape: 'sedan' },
@@ -128,6 +144,8 @@ const TRAFFIC_TYPES = [
 let player, traffic, score, laneLines, spawnTimer, spawnInterval, gameState, roadOffset;
 let roadScrollTotal = 0;
 let buildingScrollTotal = 0;
+let zebraEvent = null;
+let zebraNextTime = 0;
 let isPaused = false;
 let floatingTexts = [];
 
@@ -143,6 +161,10 @@ function resetGame() {
     isJumping: false,
     jumpFrame: 0,
     jumpTargets: new Set(),
+    doubleJumpActive: false,
+    doubleJumpUsed: false,
+    doubleJumpBase: 0,
+    doubleJumpFrames: JUMP_FRAMES,
   };
   traffic = [];
   score = 0;
@@ -151,6 +173,8 @@ function resetGame() {
   roadOffset = 0;
   roadScrollTotal = 0;
   buildingScrollTotal = 0;
+  zebraEvent = null;
+  zebraNextTime = performance.now() + ZEBRA_INTERVAL_MS;
   floatingTexts = [];
   laneLines = buildLaneLines();
   gameState = 'playing';
@@ -194,7 +218,67 @@ function spawnVehicle() {
     passed: false,
     jumpCleared: false,
     bonusAwarded: false,
+    stoppedForCrossing: false,
   });
+}
+
+function spawnZebraEvent() {
+  const pedCount = 2 + Math.floor(Math.random() * 3);
+  const pedestrians = [];
+  for (let i = 0; i < pedCount; i++) {
+    const fromLeft = Math.random() < 0.5;
+    const width = 16;
+    const height = 30;
+    pedestrians.push({
+      x: fromLeft ? ROAD_MARGIN - width - Math.random() * 50 : ROAD_MARGIN + ROAD_WIDTH + Math.random() * 50,
+      offsetY: 12 + Math.random() * (ZEBRA_HEIGHT - 24),
+      width,
+      height,
+      speed: (fromLeft ? 1 : -1) * (0.55 + Math.random() * 0.45),
+      color: PEDESTRIAN_COLORS[Math.floor(Math.random() * PEDESTRIAN_COLORS.length)],
+      skinTone: SKIN_TONES[Math.floor(Math.random() * SKIN_TONES.length)],
+      hairColor: HAIR_COLORS[Math.floor(Math.random() * HAIR_COLORS.length)],
+      walkPhase: Math.random() * Math.PI * 2,
+      jumpCleared: false,
+      bonusAwarded: false,
+    });
+  }
+  return {
+    y: -ZEBRA_HEIGHT,
+    height: ZEBRA_HEIGHT,
+    speed: ZEBRA_SPEED,
+    pedestrians,
+  };
+}
+
+function updateZebraEvent() {
+  zebraEvent.y += zebraEvent.speed;
+
+  for (const p of zebraEvent.pedestrians) {
+    p.x += p.speed;
+    p.walkPhase += 0.14;
+  }
+
+  for (const p of zebraEvent.pedestrians) {
+    const pedRect = { x: p.x, y: zebraEvent.y + p.offsetY, width: p.width, height: p.height };
+    if (rectsOverlap(player, pedRect)) {
+      // Jumping clears a pedestrian just like a small car. Whether it earns a
+      // bonus is decided separately once you land (see resolveJumpLanding).
+      if ((player.isJumping && player.jumpTargets.has(p)) || p.jumpCleared) {
+        p.jumpCleared = true;
+      } else {
+        gameOver();
+        return;
+      }
+    }
+  }
+
+  if (zebraEvent.y > player.y + player.height) {
+    zebraEvent = null;
+    for (const v of traffic) {
+      v.stoppedForCrossing = false;
+    }
+  }
 }
 
 function rectsOverlap(a, b) {
@@ -221,8 +305,10 @@ function update() {
 
   if (player.isJumping) {
     player.jumpFrame++;
-    if (player.jumpFrame >= JUMP_FRAMES) {
+    const totalJumpFrames = player.doubleJumpActive ? player.doubleJumpFrames : JUMP_FRAMES;
+    if (player.jumpFrame >= totalJumpFrames) {
       player.isJumping = false;
+      player.doubleJumpActive = false;
       player.jumpFrame = 0;
       resolveJumpLanding();
     }
@@ -235,30 +321,77 @@ function update() {
   const speed01 = Math.min(1, 0.15 + score / 30);
   EngineSound.setSpeed(speed01);
 
+  if (!zebraEvent && performance.now() >= zebraNextTime) {
+    zebraEvent = spawnZebraEvent();
+    zebraNextTime = performance.now() + ZEBRA_INTERVAL_MS;
+  }
+  if (zebraEvent) {
+    updateZebraEvent();
+  }
+
   spawnTimer++;
   if (spawnTimer >= spawnInterval) {
     spawnTimer = 0;
-    spawnVehicle();
+    if (!zebraEvent) {
+      spawnVehicle();
+    }
     spawnInterval = Math.max(32, 70 - Math.floor(score / 5));
   }
 
+  // A faster vehicle eases down to match the speed of a slower one it's
+  // catching up to in the same lane, instead of visually overlapping it —
+  // it keeps moving, just no faster than whatever's directly ahead of it.
   for (const v of traffic) {
-    v.y += v.speed;
+    v.moveSpeed = v.speed;
+    let aheadGap = Infinity;
+    let aheadSpeed = null;
+    for (const other of traffic) {
+      if (other === v || other.lane !== v.lane || other.y <= v.y) continue;
+      const gap = other.y - (v.y + v.height);
+      if (gap < aheadGap) {
+        aheadGap = gap;
+        aheadSpeed = other.speed;
+      }
+    }
+    if (aheadSpeed !== null && aheadGap < FOLLOW_GAP && v.speed > aheadSpeed) {
+      v.moveSpeed = aheadSpeed;
+    }
+  }
+
+  for (const v of traffic) {
+    if (zebraEvent && !v.stoppedForCrossing) {
+      const alreadyPast = v.y > zebraEvent.y + zebraEvent.height;
+      if (!alreadyPast && v.y + v.height >= zebraEvent.y - ZEBRA_STOP_BUFFER) {
+        // Lock the stop in for the rest of this crossing — re-checking the
+        // gap every frame let a stopped car "catch up" and creep forward as
+        // the crossing scrolled on ahead, instead of staying put before it.
+        v.stoppedForCrossing = true;
+      }
+    }
+
+    if (!(zebraEvent && v.stoppedForCrossing)) {
+      v.y += v.moveSpeed;
+    }
+
     if (!v.passed && v.y > player.y + player.height) {
       v.passed = true;
       score++;
       updateScoreDisplay();
     }
     if (rectsOverlap(player, v)) {
-      if (v.size === 'small' && ((player.isJumping && player.jumpTargets.has(v)) || v.jumpCleared)) {
-        // Once a jump has cleared this vehicle, keep it safe even after landing
-        // while it's still passing underneath — no retroactive crash. Whether it
-        // earns a bonus is decided separately, once you actually land (see
-        // resolveJumpLanding) — only landing back in the car's own lane counts.
-        v.jumpCleared = true;
-      } else if (v.size === 'big' && player.isJumping) {
-        // Mid-air over a big vehicle: no crash yet — only matters where you are
-        // when you land. Switch lanes before the jump ends and you're clear.
+      if (v.jumpCleared) {
+        // Already cleared by an earlier touch this jump — stays safe even
+        // after landing while it's still passing underneath.
+      } else if (player.isJumping) {
+        if (player.jumpTargets.has(v)) {
+          // A vehicle you actually timed this jump for — small car or big
+          // truck/bus alike — is cleared for good, landing on it included.
+          // Whether it earns a bonus is decided separately (resolveJumpLanding).
+          v.jumpCleared = true;
+        }
+        // Otherwise: mid-air pass-through only — safe for now (e.g. drifted
+        // into it while switching lanes), but not cleared. Still overlapping
+        // once you land is a crash, so you have to be clear of it by then.
       } else {
         gameOver();
       }
@@ -275,25 +408,40 @@ function update() {
 
 function resolveJumpLanding() {
   // A jump only counts as a "successful" hurdle — worth a bonus — if you land
-  // back in the same lane as a small car you cleared. Jump but dodge into a
-  // different lane before touching down, and no bonus is awarded for it.
+  // back where the thing you cleared actually was. Jump but dodge away before
+  // touching down (a different lane for a car, a different spot for a
+  // pedestrian), and no bonus is awarded for it.
   for (const v of traffic) {
-    if (v.size === 'small' && v.jumpCleared && !v.bonusAwarded && v.lane === player.lane) {
+    if (v.jumpCleared && !v.bonusAwarded && v.lane === player.lane) {
       v.bonusAwarded = true;
-      awardJumpBonus(v);
+      awardJumpBonus(v.x + v.width / 2, v.y + v.height / 2);
+    }
+  }
+
+  if (zebraEvent) {
+    for (const p of zebraEvent.pedestrians) {
+      if (p.jumpCleared && !p.bonusAwarded) {
+        const pedX = p.x;
+        const pedY = zebraEvent.y + p.offsetY;
+        const xOverlap = pedX < player.x + player.width + 20 && pedX + p.width > player.x - 20;
+        if (xOverlap) {
+          p.bonusAwarded = true;
+          awardJumpBonus(pedX + p.width / 2, pedY + p.height / 2);
+        }
+      }
     }
   }
 }
 
-function awardJumpBonus(v) {
+function awardJumpBonus(sourceX, sourceY) {
   score += 5;
   updateScoreDisplay();
   EngineSound.playBonus();
 
   floatingTexts.push({
     text: '+5',
-    startX: v.x + v.width / 2,
-    startY: v.y + v.height / 2,
+    startX: sourceX,
+    startY: sourceY,
     targetX: canvas.width - 30,
     targetY: 26,
     frame: 0,
@@ -749,16 +897,8 @@ function drawBus(x, y, width, height, color) {
 }
 
 function drawTrafficVehicle(v) {
-  // Oncoming traffic — rotate 180° so headlights/hood face down toward the
-  // player instead of matching the player's own forward-facing orientation.
-  const cx = v.x + v.width / 2;
-  const cy = v.y + v.height / 2;
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(Math.PI);
-  ctx.translate(-cx, -cy);
-
+  // Facing the same way as the player — driving the same direction, as if
+  // you're overtaking them, rather than facing toward you as oncoming traffic.
   if (v.shape === 'truck') {
     drawTruck(v.x, v.y, v.width, v.height, v.color);
   } else if (v.shape === 'bus') {
@@ -766,8 +906,6 @@ function drawTrafficVehicle(v) {
   } else {
     drawSedan(v.x, v.y, v.width, v.height, v.color, false);
   }
-
-  ctx.restore();
 }
 
 function roundRect(x, y, width, height, radius) {
@@ -783,8 +921,20 @@ function roundRect(x, y, width, height, radius) {
 function draw() {
   drawRoad();
 
+  if (zebraEvent) {
+    drawZebraCrossing(zebraEvent);
+    drawTrafficLight(ROAD_MARGIN - 10, zebraEvent.y);
+    drawTrafficLight(ROAD_MARGIN + ROAD_WIDTH + 10, zebraEvent.y);
+  }
+
   for (const v of traffic) {
     drawTrafficVehicle(v);
+  }
+
+  if (zebraEvent) {
+    for (const p of zebraEvent.pedestrians) {
+      drawPedestrian(p.x, zebraEvent.y + p.offsetY, p.width, p.height, p);
+    }
   }
 
   if (player) {
@@ -792,6 +942,148 @@ function draw() {
   }
 
   drawFloatingTexts();
+}
+
+function drawZebraCrossing(event) {
+  // Real crosswalk stripes run parallel to the direction of travel — vertical
+  // bars spread across the road's width, not stacked bands across its length.
+  const stripeCount = 8;
+  const period = ROAD_WIDTH / stripeCount;
+  const stripeW = period * 0.55;
+
+  ctx.fillStyle = 'rgba(235,235,228,0.95)';
+  for (let i = 0; i < stripeCount; i++) {
+    const sx = ROAD_MARGIN + i * period + (period - stripeW) / 2;
+    ctx.fillRect(sx, event.y, stripeW, event.height);
+  }
+}
+
+function drawTrafficLight(x, topY) {
+  const poleLen = 54;
+  const boxW = 18;
+  const boxH = 46;
+
+  ctx.save();
+  ctx.fillStyle = '#2b2b2b';
+  ctx.fillRect(x - 2.5, topY, 5, poleLen);
+
+  ctx.fillStyle = '#161616';
+  roundRect(x - boxW / 2, topY - boxH, boxW, boxH, 4);
+  ctx.fill();
+  ctx.strokeStyle = '#050505';
+  ctx.lineWidth = 1.5;
+  roundRect(x - boxW / 2, topY - boxH, boxW, boxH, 4);
+  ctx.stroke();
+
+  const lightR = boxW * 0.27;
+  const redY = topY - boxH + boxH * 0.22;
+  const yellowY = topY - boxH + boxH * 0.52;
+  const greenY = topY - boxH + boxH * 0.8;
+
+  // Bright halo behind the lit red light so it reads clearly at a glance.
+  const halo = ctx.createRadialGradient(x, redY, 0, x, redY, lightR * 2.4);
+  halo.addColorStop(0, 'rgba(255,70,70,0.65)');
+  halo.addColorStop(1, 'rgba(255,70,70,0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(x, redY, lightR * 2.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.shadowColor = 'rgba(255,60,60,1)';
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#ff4141';
+  ctx.beginPath();
+  ctx.arc(x, redY, lightR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = '#4a4420';
+  ctx.beginPath();
+  ctx.arc(x, yellowY, lightR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#1e3a24';
+  ctx.beginPath();
+  ctx.arc(x, greenY, lightR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPedestrian(x, y, width, height, p) {
+  const { color, walkPhase } = p;
+  const skinTone = p.skinTone || '#e8b98c';
+  const hairColor = p.hairColor || '#2a1c14';
+  const cx = x + width / 2;
+  const legSwing = Math.sin(walkPhase) * (width * 0.32);
+  const armSwing = Math.sin(walkPhase + Math.PI) * (width * 0.26);
+
+  ctx.save();
+  ctx.lineCap = 'round';
+
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(cx, y + height - 2, width * 0.4, height * 0.07, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = '#33404f';
+  ctx.lineWidth = width * 0.22;
+  ctx.beginPath();
+  ctx.moveTo(cx, y + height * 0.56);
+  ctx.lineTo(cx + legSwing, y + height * 0.92);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx, y + height * 0.56);
+  ctx.lineTo(cx - legSwing, y + height * 0.92);
+  ctx.stroke();
+
+  // shoes
+  ctx.fillStyle = '#1c1c1c';
+  ctx.beginPath();
+  ctx.ellipse(cx + legSwing, y + height * 0.94, width * 0.16, height * 0.05, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(cx - legSwing, y + height * 0.94, width * 0.16, height * 0.05, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = shadeColor(color, -0.2);
+  ctx.lineWidth = width * 0.16;
+  ctx.beginPath();
+  ctx.moveTo(cx, y + height * 0.3);
+  ctx.lineTo(cx + armSwing, y + height * 0.58);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx, y + height * 0.3);
+  ctx.lineTo(cx - armSwing, y + height * 0.58);
+  ctx.stroke();
+
+  // hands
+  ctx.fillStyle = skinTone;
+  ctx.beginPath();
+  ctx.arc(cx + armSwing, y + height * 0.58, width * 0.09, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx - armSwing, y + height * 0.58, width * 0.09, 0, Math.PI * 2);
+  ctx.fill();
+
+  const torsoGradient = ctx.createLinearGradient(x, y, x + width, y);
+  torsoGradient.addColorStop(0, shadeColor(color, -0.15));
+  torsoGradient.addColorStop(0.5, shadeColor(color, 0.1));
+  torsoGradient.addColorStop(1, shadeColor(color, -0.15));
+  ctx.fillStyle = torsoGradient;
+  roundRect(x + width * 0.18, y + height * 0.2, width * 0.64, height * 0.4, width * 0.3);
+  ctx.fill();
+
+  ctx.fillStyle = skinTone;
+  ctx.beginPath();
+  ctx.arc(cx, y + height * 0.12, width * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = hairColor;
+  ctx.beginPath();
+  ctx.arc(cx, y + height * 0.08, width * 0.3, Math.PI, 0);
+  ctx.fill();
+
+  ctx.restore();
 }
 
 function drawFloatingTexts() {
@@ -818,24 +1110,103 @@ function drawFloatingTexts() {
   }
 }
 
+// Quick launch off the ground, smooth arrival at the peak, then a decelerating
+// glide back down that softens into landing instead of dropping in at full
+// speed — a plain sine arc falls fastest right as it's about to touch down.
+function jumpEase(t) {
+  if (t <= 0.5) {
+    const u = t / 0.5;
+    return 1 - (1 - u) * (1 - u);
+  }
+  const u = (t - 0.5) / 0.5;
+  return (1 - u) * (1 - u);
+}
+
+// The active jump's height, as a fraction of JUMP_HEIGHT — 0 to 1 for a
+// normal single jump, but can climb past 1 during a chained double jump.
+function currentJumpArc(p) {
+  if (!p.isJumping) return 0;
+
+  if (!p.doubleJumpActive) {
+    return jumpEase(p.jumpFrame / JUMP_FRAMES);
+  }
+
+  // Double jump: continue up from wherever the first jump left off, climb to
+  // a taller peak, then glide back down to the ground — never dips first.
+  const t = p.jumpFrame / p.doubleJumpFrames;
+  if (t <= DOUBLE_JUMP_RISE_FRACTION) {
+    const u = t / DOUBLE_JUMP_RISE_FRACTION;
+    const eased = 1 - (1 - u) * (1 - u);
+    return p.doubleJumpBase + (DOUBLE_JUMP_PEAK - p.doubleJumpBase) * eased;
+  }
+  const u = (t - DOUBLE_JUMP_RISE_FRACTION) / (1 - DOUBLE_JUMP_RISE_FRACTION);
+  return DOUBLE_JUMP_PEAK * (1 - u) * (1 - u);
+}
+
 function drawPlayer() {
-  const timerArc = player.isJumping ? Math.sin(Math.PI * (player.jumpFrame / JUMP_FRAMES)) : 0;
+  const timerArc = currentJumpArc(player);
 
   // A cleared small vehicle can still be physically passing underneath after the
   // jump timer ends. Keep a light hover over it so landing never renders the two
   // cars flush on top of each other — touch down for real only once it's clear.
-  const overlappingSmall = traffic.some((v) => v.size === 'small' && rectsOverlap(player, v));
-  const jumpArc = overlappingSmall ? Math.max(timerArc, MIN_HOVER_ARC) : timerArc;
+  const overlappingObstacle =
+    traffic.some((v) => rectsOverlap(player, v)) ||
+    (zebraEvent &&
+      zebraEvent.pedestrians.some((p) =>
+        rectsOverlap(player, { x: p.x, y: zebraEvent.y + p.offsetY, width: p.width, height: p.height })
+      ));
+  const jumpArc = overlappingObstacle ? Math.max(timerArc, MIN_HOVER_ARC) : timerArc;
 
   const lift = jumpArc * JUMP_HEIGHT;
   const scale = 1 + jumpArc * JUMP_SCALE;
 
+  // Squash-and-stretch: a brief vertical stretch right at launch (bigger for
+  // the double jump's extra thrust) and a brief squash right before landing —
+  // sells the sense of real push-off and impact instead of a flat float.
+  let stretchX = 1;
+  let stretchY = 1;
+  if (player.isJumping) {
+    const totalFrames = player.doubleJumpActive ? player.doubleJumpFrames : JUMP_FRAMES;
+    const framesIn = player.jumpFrame;
+    const framesToLand = totalFrames - player.jumpFrame;
+    const launchWindow = 8;
+    const landingWindow = 8;
+
+    if (framesIn < launchWindow) {
+      const strength = player.doubleJumpActive ? 0.3 : 0.16;
+      const t = 1 - framesIn / launchWindow;
+      stretchY += strength * t;
+      stretchX -= strength * 0.55 * t;
+    }
+    if (framesToLand < landingWindow) {
+      const strength = player.doubleJumpActive ? 0.26 : 0.14;
+      const t = 1 - framesToLand / landingWindow;
+      stretchY -= strength * t;
+      stretchX += strength * 0.6 * t;
+    }
+  }
+
   const cx = player.x + player.width / 2;
   const cy = player.y + player.height / 2;
-  const drawW = player.width * scale;
-  const drawH = player.height * scale;
+  const drawW = player.width * scale * stretchX;
+  const drawH = player.height * scale * stretchY;
   const drawX = cx - drawW / 2;
   const drawY = cy - drawH / 2 - lift;
+
+  if (player.doubleJumpActive && player.jumpFrame < 14) {
+    // A quick expanding ring pulses from the ground the instant the double
+    // jump kicks in, like a burst of thrust launching the car higher.
+    const t = player.jumpFrame / 14;
+    const ringR = player.width * 0.55 * (1 + t * 1.8);
+    ctx.save();
+    ctx.globalAlpha = (1 - t) * 0.5;
+    ctx.strokeStyle = '#ffd23f';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.ellipse(cx, player.y + player.height - 4, ringR, ringR * 0.35, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
 
   if (jumpArc > 0.02) {
     const shadowScale = 1 - jumpArc * 0.4;
@@ -850,7 +1221,47 @@ function drawPlayer() {
     ctx.restore();
   }
 
+  if (jumpArc > 0.03) {
+    drawFlyingDoor(-1, cx, cy, drawW, drawH, jumpArc, '#3ec1ff');
+    drawFlyingDoor(1, cx, cy, drawW, drawH, jumpArc, '#3ec1ff');
+  }
+
   drawSedan(drawX, drawY, drawW, drawH, '#3ec1ff', true, true);
+}
+
+// A door that swings out and up while airborne, like the car is taking flight —
+// folds back flush against the body the instant it touches back down.
+function drawFlyingDoor(side, cx, cy, carWidth, carHeight, openAmount, color) {
+  // Hinged right at the car's own edge — the panel grows outward from that
+  // fixed point and swings its tip forward, so it visibly emerges from the
+  // body on the way up and folds straight back into it on the way down.
+  const doorW = carWidth * 0.56 * openAmount;
+  const doorH = carHeight * 0.44;
+  const hingeX = cx + side * carWidth * 0.46;
+  const hingeY = cy - carHeight * 0.04;
+  const tilt = -side * openAmount * DOOR_MAX_ANGLE;
+  const rectX = side < 0 ? -doorW : 0;
+
+  ctx.save();
+  ctx.translate(hingeX, hingeY);
+  ctx.rotate(tilt);
+
+  const gradient = ctx.createLinearGradient(rectX, 0, rectX + doorW, 0);
+  gradient.addColorStop(0, shadeColor(color, side < 0 ? 0.12 : -0.18));
+  gradient.addColorStop(1, shadeColor(color, side < 0 ? -0.18 : 0.12));
+  ctx.fillStyle = gradient;
+  roundRect(rectX, -doorH / 2, doorW, doorH, 4);
+  ctx.fill();
+  ctx.strokeStyle = shadeColor(color, -0.4);
+  ctx.lineWidth = 1;
+  roundRect(rectX, -doorH / 2, doorW, doorH, 4);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(190,220,235,0.55)';
+  roundRect(rectX + doorW * 0.18, -doorH * 0.32, doorW * 0.64, doorH * 0.64, 3);
+  ctx.fill();
+
+  ctx.restore();
 }
 
 function loop() {
@@ -874,16 +1285,63 @@ function isVehicleNearForJump(v) {
   return gapAhead <= JUMP_NEAR_RANGE && v.y <= player.y + player.height;
 }
 
-function triggerJump() {
-  if (gameState !== 'playing' || player.isJumping) return;
-  player.isJumping = true;
-  player.jumpFrame = 0;
-  // Only cars that are genuinely close in your lane right now count as this
-  // jump's target — jumping too early locks onto nothing, so it won't forgive
-  // a car that only arrives later.
-  player.jumpTargets = new Set(
-    traffic.filter((v) => v.size === 'small' && v.lane === player.lane && !v.jumpCleared && isVehicleNearForJump(v))
+function isPedestrianNearForJump(p) {
+  // Pedestrians aren't lane-locked, so "near" checks horizontal proximity to
+  // the player (with a forgiving buffer, since they keep drifting sideways —
+  // requiring an exact overlap at the instant you jump was too tight) plus
+  // the same vertical timing used for cars.
+  const pedRect = { x: p.x, y: zebraEvent.y + p.offsetY, width: p.width, height: p.height };
+  const xBuffer = 40;
+  const xNear = pedRect.x < player.x + player.width + xBuffer && pedRect.x + pedRect.width > player.x - xBuffer;
+  const gapAhead = player.y - (pedRect.y + pedRect.height);
+  return xNear && gapAhead <= JUMP_NEAR_RANGE && pedRect.y <= player.y + player.height;
+}
+
+function collectNearbyJumpTargets(includeBig) {
+  const found = traffic.filter(
+    (v) => (includeBig || v.size !== 'big') && v.lane === player.lane && !v.jumpCleared && isVehicleNearForJump(v)
   );
+  if (zebraEvent) {
+    for (const p of zebraEvent.pedestrians) {
+      if (!p.jumpCleared && isPedestrianNearForJump(p)) {
+        found.push(p);
+      }
+    }
+  }
+  return found;
+}
+
+function triggerJump() {
+  if (gameState !== 'playing') return;
+
+  if (!player.isJumping) {
+    // First press: a normal jump. Only cars/pedestrians that are genuinely
+    // close right now count as targets — big trucks/buses need the extra
+    // height from a chained double jump to actually clear, so a single jump
+    // alone doesn't lock onto them (they still get the usual mid-air
+    // pass-through, but you must dodge lanes before landing on one).
+    player.isJumping = true;
+    player.jumpFrame = 0;
+    player.doubleJumpActive = false;
+    player.doubleJumpUsed = false;
+    player.jumpTargets = new Set(collectNearbyJumpTargets(false));
+    return;
+  }
+
+  if (!player.doubleJumpUsed) {
+    // Second press before landing: chain into a bigger, higher double jump
+    // that continues up from the current height instead of resetting to the
+    // ground — and this extra height is what lets a big vehicle be cleared.
+    player.doubleJumpUsed = true;
+    player.doubleJumpActive = true;
+    player.doubleJumpBase = currentJumpArc(player);
+    player.doubleJumpFrames = DOUBLE_JUMP_FRAMES;
+    player.jumpFrame = 0;
+
+    for (const target of collectNearbyJumpTargets(true)) {
+      player.jumpTargets.add(target);
+    }
+  }
 }
 
 const keysPressed = { up: false, down: false };
@@ -973,6 +1431,40 @@ function returnToMainMenu() {
 }
 
 mainMenuBtn.addEventListener('click', returnToMainMenu);
+
+function toggleFullscreen() {
+  const inFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+  if (inFullscreen) {
+    if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
+    return;
+  }
+
+  try {
+    const request = canvasContainer.requestFullscreen
+      ? canvasContainer.requestFullscreen()
+      : canvasContainer.webkitRequestFullscreen && canvasContainer.webkitRequestFullscreen();
+    if (request && request.catch) {
+      request.catch((e) => console.warn('Car Rush: could not enter fullscreen.', e));
+    }
+  } catch (e) {
+    console.warn('Car Rush: could not enter fullscreen.', e);
+  }
+}
+
+function updateFullscreenButtons() {
+  const label = document.fullscreenElement || document.webkitFullscreenElement ? '🖥️ Exit Full Screen' : '🖥️ Full Screen';
+  fullscreenBtn.textContent = label;
+  welcomeFullscreenBtn.textContent = label;
+}
+
+fullscreenBtn.addEventListener('click', toggleFullscreen);
+welcomeFullscreenBtn.addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', updateFullscreenButtons);
+document.addEventListener('webkitfullscreenchange', updateFullscreenButtons);
 
 function submitUsername() {
   const raw = usernameInput.value.trim();

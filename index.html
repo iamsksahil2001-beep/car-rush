@@ -17,7 +17,7 @@
       <button id="settingsBtn" title="Settings">⚙️</button>
       <div id="overlay">
         <div id="overlay-title" class="overlay-title">Car Rush</div>
-        <div id="overlay-message" class="overlay-message">Use ← → or A / D to switch lanes.<br>Use ↑ ↓ or W / S to move up and down.<br>Press Space to jump — clears small cars, but big trucks will still wreck you!<br>Press M to mute/unmute, Enter to open Settings.</div>
+        <div id="overlay-message" class="overlay-message">Use ← → or A / D to switch lanes.<br>Use ↑ ↓ or W / S to move up and down.<br>Space to jump — clear a small car or pedestrian with good timing (+5 for a clean landing). Press Space again before landing for a double jump — the extra height clears big trucks/buses too!<br>Zebra crossings appear regularly — traffic stops for pedestrians, so dodge or jump them too.<br>M to mute, Enter for Settings/Restart, 🖥️ Full Screen in the menu.</div>
         <button id="startBtn">Start Game</button>
       </div>
 
@@ -34,6 +34,7 @@
           <button id="welcomeStartBtn" class="settings-row">🏁 Start Game</button>
           <button id="welcomeSettingsBtn" class="settings-row">⚙️ Settings</button>
           <button id="welcomeLeaderboardBtn" class="settings-row">🏆 Leaderboard</button>
+          <button id="welcomeFullscreenBtn" class="settings-row">🖥️ Full Screen</button>
           <button id="welcomeExitBtn" class="settings-row">🚪 Exit Game</button>
         </div>
 
@@ -58,12 +59,27 @@
             <span class="howto-jump-arrow">⤴️</span>
             <span>🚗</span>
           </div>
-          <div class="howto-caption">Space to jump small cars — big trucks still wreck you!</div>
+          <div class="howto-caption">Space to jump a small car or pedestrian — time it right and land back on it for +5</div>
+
+          <div class="howto-diagram howto-jump-diagram">
+            <span>🚛</span>
+            <span class="howto-jump-arrow">⤴️⤴️</span>
+            <span>🚗</span>
+          </div>
+          <div class="howto-caption">Press Space again before landing for a double jump — the extra height clears big trucks/buses</div>
+
+          <div class="howto-diagram howto-jump-diagram">
+            <span>🚦🚶</span>
+            <span class="howto-jump-arrow">⤴️</span>
+            <span>🚗</span>
+          </div>
+          <div class="howto-caption">Zebra crossings appear regularly — traffic stops for pedestrians, so dodge or jump them too</div>
 
           <div class="overlay-message">
             ← → / A D — switch lanes<br>
             ↑ ↓ / W S — move up and down<br>
-            Space — jump · M — mute
+            Space — jump, press again mid-air to double jump<br>
+            M — mute · Enter — Settings/Restart · 🖥️ Full Screen in the menu
           </div>
 
           <button id="howToPlayStartBtn" class="settings-close">Press Enter or Click to Start</button>
@@ -77,6 +93,7 @@
             <button id="soundToggleBtn" class="settings-row">🔊 Sound: ON</button>
             <button id="restartGameBtn" class="settings-row">🔄 Restart Game</button>
             <button id="leaderboardBtn" class="settings-row">🏆 Leaderboard</button>
+            <button id="fullscreenBtn" class="settings-row">🖥️ Full Screen</button>
             <button id="mainMenuBtn" class="settings-row">🏠 Return to Main Menu</button>
             <button id="closeSettingsBtn" class="settings-close">Close</button>
           </div>
